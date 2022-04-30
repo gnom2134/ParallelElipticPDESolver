@@ -2,6 +2,7 @@ import numpy as np
 from typing import Tuple, List
 from utils import fill_with_func, is_close, calc_time
 from multiprocessing import Pool
+from scipy.sparse import lil_matrix, linalg
 
 
 def example_f(x: float, y: float) -> float:
@@ -13,7 +14,8 @@ def build_K(
 ) -> Tuple[np.array, List[np.array], List[np.array], List[np.array]]:
     interface_points_num = C_number // (number_of_parts - 1)
 
-    K_C = np.diag([4 for _ in range(C_number)])
+    K_C = lil_matrix((C_number, C_number), dtype=np.float64)
+    K_C.setdiag([4 for _ in range(C_number)])
     rng = np.arange(C_number - 1)
     K_C[rng, rng + 1] = -1
     K_C[
@@ -30,7 +32,8 @@ def build_K(
     K_CI = []
     K_I = []
     for i in range(number_of_parts):
-        K_I_i = np.diag([4 for _ in range(I_number)])
+        K_I_i = lil_matrix((I_number, I_number), dtype=np.float64)
+        K_I_i.setdiag([4 for _ in range(I_number)])
         rng = np.arange(I_number - 1)
         K_I_i[rng, rng + 1] = -1
         K_I_i[
@@ -46,7 +49,7 @@ def build_K(
         K_I_i[rng, rng + interface_points_num] = -1
         K_I_i[rng + interface_points_num, rng] = -1
 
-        K_CI_i = np.zeros((C_number, I_number))
+        K_CI_i = lil_matrix((C_number, I_number), dtype=np.float64)
         rng = np.arange(interface_points_num)
         if i > 0:
             K_CI_i[rng + (i - 1) * interface_points_num, rng] = -1
@@ -60,12 +63,13 @@ def build_K(
     return K_C, K_I, K_IC, K_CI
 
 
-def dd_solve_brute(f_value: np.array) -> np.array:
+def pde_solve_brute(f_value: np.array) -> np.array:
     h, w = f_value.shape
     f_value = f_value.T.reshape((-1,))
 
     # building K
-    K = np.diag([4 for _ in range(f_value.shape[0])])
+    K = lil_matrix((f_value.shape[0], f_value.shape[0]), dtype=np.float64)
+    K.setdiag([4 for _ in range(f_value.shape[0])])
     rng = np.arange(f_value.shape[0] - 1)
     K[rng, rng + 1] = -1
     K[
@@ -81,7 +85,7 @@ def dd_solve_brute(f_value: np.array) -> np.array:
     K[rng, rng + h] = -1
     K[rng + h, rng] = -1
 
-    return np.linalg.inv(K) @ f_value
+    return linalg.inv(K) @ f_value
 
 
 def step1(args):
@@ -99,7 +103,7 @@ def step3(args):
     return K_I_inv @ (f_value[C_size + s * I_size : C_size + (s + 1) * I_size] - K_IC[s] @ u_C)
 
 
-def dd_solve_parallel(f_value: np.array, divide_on: int = 2, processes: int = 8):
+def pde_solve_parallel(f_value: np.array, divide_on: int = 2, processes: int = 8):
     h, w = f_value.shape
     if (w + 1) % divide_on != 0:
         raise AttributeError(f"Can not divide in {divide_on} equal domains")
@@ -121,7 +125,7 @@ def dd_solve_parallel(f_value: np.array, divide_on: int = 2, processes: int = 8)
         back_indices[indices[i]] = i
     f_value = f_value[:, indices].T.reshape((-1,))
 
-    K_I_inv = np.linalg.inv(K_I[0])
+    K_I_inv = linalg.inv(K_I[0])
 
     executors = None
     if processes > 1:
@@ -145,7 +149,7 @@ def dd_solve_parallel(f_value: np.array, divide_on: int = 2, processes: int = 8)
         for s in range(divide_on):
             S_C -= K_CI[s] @ K_I_inv @ K_CI[s].T
 
-    u_C = np.linalg.inv(S_C) @ g
+    u_C = linalg.inv(S_C) @ g
 
     if processes > 1:
         u_I = executors.map(step3, [(x, K_I_inv, f_value, K_IC, u_C, C_size, I_size) for x in range(divide_on)])
@@ -161,25 +165,25 @@ def dd_solve_parallel(f_value: np.array, divide_on: int = 2, processes: int = 8)
 
 if __name__ == "__main__":
     h = 1e-2
-    height = 20
-    width = 1023
+    height = 30
+    width = 255
     x_0 = 0
     y_0 = 0
-    split_into = 128
+    split_into = 64
     average_its = 5
 
     grid = np.zeros((height, width))
     fill_with_func(grid, x_0, y_0, h, example_f)
 
-    dtime1, res1 = calc_time(dd_solve_brute, (grid,), 1)
+    dtime1, res1 = calc_time(pde_solve_brute, (grid,), 1)
 
-    dtime2, res2 = calc_time(dd_solve_parallel, (grid, split_into, 2), average_its)
+    dtime2, res2 = calc_time(pde_solve_parallel, (grid, split_into, 2), average_its)
 
-    dtime3, res3 = calc_time(dd_solve_parallel, (grid, split_into, 4), average_its)
+    dtime3, res3 = calc_time(pde_solve_parallel, (grid, split_into, 4), average_its)
 
-    dtime4, res4 = calc_time(dd_solve_parallel, (grid, split_into, 8), average_its)
+    dtime4, res4 = calc_time(pde_solve_parallel, (grid, split_into, 8), average_its)
 
-    dtime5, res5 = calc_time(dd_solve_parallel, (grid, split_into, 1), average_its)
+    dtime5, res5 = calc_time(pde_solve_parallel, (grid, split_into, 1), average_its)
 
     assert is_close(res1, res2) and is_close(res1, res3) and is_close(res1, res4) and is_close(res1, res5)
     print(f"Grid size {height}x{width}, split into {split_into} chunks")
