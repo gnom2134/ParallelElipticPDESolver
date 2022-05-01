@@ -25,5 +25,6 @@ def calc_time(func: Callable, args: Tuple, its: int) -> Tuple[int, np.array]:
     for _ in tqdm(range(its)):
         st = datetime.now()
         res = func(*args)
-        dtime.append((datetime.now() - st).microseconds)
-    return int(np.median(dtime)), res
+        time_diff = datetime.now() - st
+        dtime.append(time_diff.total_seconds() * 1e6 + time_diff.microseconds)
+    return int(np.mean(dtime)), res

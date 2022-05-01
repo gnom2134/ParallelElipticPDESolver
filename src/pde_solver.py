@@ -2,7 +2,7 @@ import numpy as np
 from typing import Tuple, List
 from utils import fill_with_func, is_close, calc_time
 from multiprocessing import Pool
-from scipy.sparse import lil_matrix, linalg
+from scipy.sparse import linalg, csc_matrix
 
 
 def example_f(x: float, y: float) -> float:
@@ -14,7 +14,7 @@ def build_K(
 ) -> Tuple[np.array, List[np.array], List[np.array], List[np.array]]:
     interface_points_num = C_number // (number_of_parts - 1)
 
-    K_C = lil_matrix((C_number, C_number), dtype=np.float64)
+    K_C = csc_matrix((C_number, C_number), dtype=np.float64)
     K_C.setdiag([4 for _ in range(C_number)])
     rng = np.arange(C_number - 1)
     K_C[rng, rng + 1] = -1
@@ -32,7 +32,7 @@ def build_K(
     K_CI = []
     K_I = []
     for i in range(number_of_parts):
-        K_I_i = lil_matrix((I_number, I_number), dtype=np.float64)
+        K_I_i = csc_matrix((I_number, I_number), dtype=np.float64)
         K_I_i.setdiag([4 for _ in range(I_number)])
         rng = np.arange(I_number - 1)
         K_I_i[rng, rng + 1] = -1
@@ -49,7 +49,7 @@ def build_K(
         K_I_i[rng, rng + interface_points_num] = -1
         K_I_i[rng + interface_points_num, rng] = -1
 
-        K_CI_i = lil_matrix((C_number, I_number), dtype=np.float64)
+        K_CI_i = csc_matrix((C_number, I_number), dtype=np.float64)
         rng = np.arange(interface_points_num)
         if i > 0:
             K_CI_i[rng + (i - 1) * interface_points_num, rng] = -1
@@ -68,7 +68,7 @@ def pde_solve_brute(f_value: np.array) -> np.array:
     f_value = f_value.T.reshape((-1,))
 
     # building K
-    K = lil_matrix((f_value.shape[0], f_value.shape[0]), dtype=np.float64)
+    K = csc_matrix((f_value.shape[0], f_value.shape[0]), dtype=np.float64)
     K.setdiag([4 for _ in range(f_value.shape[0])])
     rng = np.arange(f_value.shape[0] - 1)
     K[rng, rng + 1] = -1
@@ -120,7 +120,7 @@ def pde_solve_parallel(f_value: np.array, divide_on: int = 2, processes: int = 8
         if (i - step) % (step + 1) == 0:
             continue
         indices.append(i)
-    back_indices = [0 for x in range(len(indices))]
+    back_indices = [0 for _ in range(len(indices))]
     for i in range(len(indices)):
         back_indices[indices[i]] = i
     f_value = f_value[:, indices].T.reshape((-1,))
@@ -164,35 +164,48 @@ def pde_solve_parallel(f_value: np.array, divide_on: int = 2, processes: int = 8
 
 
 if __name__ == "__main__":
-    h = 1e-2
-    height = 30
-    width = 255
-    x_0 = 0
-    y_0 = 0
-    split_into = 64
-    average_its = 5
+    enable_brute = True
 
-    grid = np.zeros((height, width))
-    fill_with_func(grid, x_0, y_0, h, example_f)
+    hs = [0.25, 0.1, 0.05, 0.01]
+    heights = [3, 9, 19, 99]
+    widths = [7, 19, 39, 199]
+    splits = [[2, 4], [2, 5], [2, 4, 5, 10], [2, 5, 10, 50, 100]]
 
-    dtime1, res1 = calc_time(pde_solve_brute, (grid,), 1)
+    for h, height, width, split in zip(hs, heights, widths, splits):
+        x_0 = 0
+        y_0 = 0
+        average_its = 5
+        grid = np.zeros((height, width))
+        fill_with_func(grid, x_0, y_0, h, example_f)
 
-    dtime2, res2 = calc_time(pde_solve_parallel, (grid, split_into, 2), average_its)
+        if enable_brute:
+            dtime1, res1 = calc_time(pde_solve_brute, (grid,), average_its)
 
-    dtime3, res3 = calc_time(pde_solve_parallel, (grid, split_into, 4), average_its)
+        for split_into in split:
+            dtime2, res2 = calc_time(pde_solve_parallel, (grid, split_into, 2), average_its)
 
-    dtime4, res4 = calc_time(pde_solve_parallel, (grid, split_into, 8), average_its)
+            dtime3, res3 = calc_time(pde_solve_parallel, (grid, split_into, 4), average_its)
 
-    dtime5, res5 = calc_time(pde_solve_parallel, (grid, split_into, 1), average_its)
+            dtime4, res4 = calc_time(pde_solve_parallel, (grid, split_into, 8), average_its)
 
-    assert is_close(res1, res2) and is_close(res1, res3) and is_close(res1, res4) and is_close(res1, res5)
-    print(f"Grid size {height}x{width}, split into {split_into} chunks")
-    print(f"Brute algorithm: {dtime1}")
-    print(f"Parallel algorithm (2 ps): {dtime2}")
-    print(f"Parallel algorithm (4 ps): {dtime3}")
-    print(f"Parallel algorithm (8 ps): {dtime4}")
-    print(f"Split algorithm (1 ps): {dtime5}")
+            dtime5, res5 = calc_time(pde_solve_parallel, (grid, split_into, 1), average_its)
 
-    print(
-        f"| {height}x{width} | {split_into} | {dtime1} | {dtime2} | {dtime3} | {dtime4} | {dtime5} |"
-    )
+            if enable_brute:
+                assert is_close(res1, res2) and is_close(res1, res3) and is_close(res1, res4) and is_close(res1, res5)
+            else:
+                assert is_close(res2, res3) and is_close(res3, res4) and is_close(res4, res5)
+            print(f"Grid size {height}x{width}, split into {split_into} chunks")
+            if enable_brute:
+                print(f"Brute algorithm: {dtime1}")
+            print(f"Parallel algorithm (2 ps): {dtime2}")
+            print(f"Parallel algorithm (4 ps): {dtime3}")
+            print(f"Parallel algorithm (8 ps): {dtime4}")
+            print(f"Split algorithm (1 ps): {dtime5}")
+            if enable_brute:
+                print(
+                    f"| {height}x{width} | {split_into} | {dtime1} | {dtime2} | {dtime3} | {dtime4} | {dtime5} |"
+                )
+            else:
+                print(
+                    f"| {height}x{width} | {split_into} | --- | {dtime2} | {dtime3} | {dtime4} | {dtime5} |"
+                )
